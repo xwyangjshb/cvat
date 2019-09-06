@@ -414,17 +414,27 @@ class TaskViewSet(auth.TaskGetQuerySetMixin, viewsets.ModelViewSet):
 
         return response
 
+    @staticmethod
     @action(detail=True, methods=['GET'], serializer_class=ImageMetaSerializer,
         url_path='frames/meta')
-    def data_info(self, request, pk):
-        try:
-            db_task = self.get_object() # call check_object_permissions as well
-            meta_cache_file = open(db_task.get_image_meta_cache_path())
-        except OSError:
-            task.make_image_meta_cache(db_task)
-            meta_cache_file = open(db_task.get_image_meta_cache_path())
+    def data_info(request, pk):
+        data = {
+            'original_size': [],
+        }
 
-        data = literal_eval(meta_cache_file.read())
+        db_task = models.Task.objects.prefetch_related('image_set').select_related('video').get(pk=pk)
+
+        if db_task.mode == 'interpolation':
+            media = [db_task.video]
+        else:
+            media = list(db_task.image_set.order_by('frame'))
+
+        for item in media:
+            data['original_size'].append({
+            'width': item.width,
+            'height': item.height,
+        })
+
         serializer = ImageMetaSerializer(many=True, data=data['original_size'])
         if serializer.is_valid(raise_exception=True):
             return Response(serializer.data)
