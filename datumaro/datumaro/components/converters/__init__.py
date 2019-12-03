@@ -23,6 +23,10 @@ from datumaro.components.converters.voc import (
     VocSegmentationConverter,
 )
 
+from datumaro.components.converters.tfrecord import (
+    DetectionApiConverter,
+)
+
 
 items = [
     ('datumaro', DatumaroConverter),
@@ -40,4 +44,6 @@ items = [
     ('voc_segm', VocSegmentationConverter),
     ('voc_action', VocActionConverter),
     ('voc_layout', VocLayoutConverter),
+
+    ('tf_detection_api', DetectionApiConverter),
 ]

@@ -26,6 +26,10 @@ from datumaro.components.extractors.voc import (
     VocComp_9_10_Extractor,
 )
 
+from datumaro.components.extractors.tfrecord import (
+    DetectionApiExtractor,
+)
+
 
 items = [
     ('datumaro', DatumaroExtractor),
@@ -47,4 +51,6 @@ items = [
     ('voc_comp_5_6', VocComp_5_6_Extractor),
     ('voc_comp_7_8', VocComp_7_8_Extractor),
     ('voc_comp_9_10', VocComp_9_10_Extractor),
+
+    ('tf_detection_api', DetectionApiExtractor),
 ]
