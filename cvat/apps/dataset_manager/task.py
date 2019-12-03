@@ -379,6 +379,11 @@ EXPORT_FORMATS = [
         'name': 'MS COCO',
         'tag': 'coco',
         'is_default': False,
+    },
+    {
+        'name': 'TF Detection API TFrecord',
+        'tag': 'tf_detection_api',
+        'is_default': False,
     }
 ]
 
