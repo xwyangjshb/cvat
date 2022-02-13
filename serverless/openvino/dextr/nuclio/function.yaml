@@ -34,11 +34,13 @@ spec:
 
       postCopy:
         - kind: RUN
-          value: curl -O https://download.01.org/openvinotoolkit/models_contrib/cvat/dextr_model_v1.zip
+          value: curl -O  http://oc1.betvsys.com:9000/bvs/andy/dextr_model_v1.zip
         - kind: RUN
           value: unzip dextr_model_v1.zip
         - kind: RUN
-          value: pip3 install -U pip && pip3 install wheel Pillow
+          value: pip3 install -U pip && pip3 install wheel
+        - kind: RUN
+          value: pip3 install Pillow -i http://mirrors.aliyun.com/pypi/simple/  --trusted-host mirrors.aliyun.com
 
   triggers:
     myHttpTrigger:
@@ -52,5 +54,5 @@ spec:
     attributes:
       restartPolicy:
         name: always
-        maximumRetryCount: 3
+        maximumRetryCount: 6
       mountMode: volume

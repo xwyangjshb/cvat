@@ -82,8 +82,8 @@ services:
     #   - traefik.http.routers.dashboard.service=api@internal
     #   - traefik.http.routers.dashboard.rule=Host(`${CVAT_HOST:-localhost}`)
     ports:
-      - 8080:8080
-      - 8090:8090
+      - 9080:8080
+      - 9090:8090
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
     networks:

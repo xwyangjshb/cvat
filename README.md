@@ -186,3 +186,7 @@ Other ways to ask questions and get our support:
 [coverage-url]: https://coveralls.io/github/openvinotoolkit/cvat?branch=develop
 [doi-img]: https://zenodo.org/badge/139156354.svg
 [doi-url]: https://zenodo.org/badge/latestdoi/139156354
+
+## Start, DOWN service
+- /root/cvat/cvat/start.sh   #up services
+- /root/cvat/cvat/down.sh    #down services 
