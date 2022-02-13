@@ -11,13 +11,14 @@ from django.core.exceptions import ObjectDoesNotExist, ValidationError
 from rest_framework import status, viewsets
 from rest_framework.response import Response
 
-from cvat.apps.authentication import auth
 import cvat.apps.dataset_manager as dm
 from cvat.apps.engine.frame_provider import FrameProvider
 from cvat.apps.engine.models import Task as TaskModel
 from cvat.apps.engine.serializers import LabeledDataSerializer
-from rest_framework.permissions import IsAuthenticated
 from cvat.apps.engine.models import ShapeType, SourceType
+
+from drf_spectacular.utils import extend_schema, extend_schema_view, OpenApiResponse, OpenApiParameter
+from drf_spectacular.types import OpenApiTypes
 
 class LambdaType(Enum):
     DETECTOR = "detector"
@@ -230,7 +231,6 @@ class LambdaFunction:
 
         return base64.b64encode(image[0].getvalue()).decode('utf-8')
 
-
 class LambdaQueue:
     def _get_queue(self):
         QUEUE_NAME = "low"
@@ -287,7 +287,6 @@ class LambdaQueue:
                 code=status.HTTP_404_NOT_FOUND)
 
         return LambdaJob(job)
-
 
 class LambdaJob:
     def __init__(self, job):
@@ -353,6 +352,9 @@ class LambdaJob:
             def append_shape(self, shape):
                 self.data["shapes"].append(shape)
 
+            def append_tag(self, tag):
+                self.data["tags"].append(tag)
+
             def submit(self):
                 if not self.is_empty():
                     serializer = LabeledDataSerializer(data=self.data)
@@ -380,7 +382,17 @@ class LambdaJob:
 
             for anno in annotations:
                 label_id = labels.get(anno["label"])
-                if label_id is not None:
+                if label_id is None:
+                    continue # Invalid label provided
+                if anno["type"].lower() == "tag":
+                    results.append_tag({
+                        "frame": frame,
+                        "label_id": label_id,
+                        "source": "auto",
+                        "attributes": [],
+                        "group": None,
+                    })
+                else:
                     results.append_shape({
                         "frame": frame,
                         "label_id": label_id,
@@ -532,24 +544,28 @@ def return_response(success_code=status.HTTP_200_OK):
             except ValidationError as err:
                 status_code = err.code
                 data = err.message
+            except ObjectDoesNotExist as err:
+                status_code = status.HTTP_400_BAD_REQUEST
+                data = str(err)
 
             return Response(data=data, status=status_code)
 
         return func_wrapper
     return wrap_response
 
+@extend_schema_view(retrieve=extend_schema(
+    summary='Method returns the information about the function',
+    responses={
+        '200': OpenApiResponse(response=OpenApiTypes.OBJECT, description='Information about the function'),
+    },
+    tags=['lambda'], versions=['2.0']))
+@extend_schema_view(list=extend_schema(
+    summary='Method returns a list of functions', tags=['lambda'], versions=['2.0']))
 class FunctionViewSet(viewsets.ViewSet):
     lookup_value_regex = '[a-zA-Z0-9_.-]+'
     lookup_field = 'func_id'
-
-    def get_permissions(self):
-        http_method = self.request.method
-        permissions = [IsAuthenticated]
-
-        if http_method in ["POST"]:
-            permissions.append(auth.TaskAccessPermission)
-
-        return [perm() for perm in permissions]
+    iam_organization_field = None
+    serializer_class = None
 
     @return_response()
     def list(self, request):
@@ -558,17 +574,16 @@ class FunctionViewSet(viewsets.ViewSet):
 
     @return_response()
     def retrieve(self, request, func_id):
+        self.check_object_permissions(request, func_id)
         gateway = LambdaGateway()
         return gateway.get(func_id).to_dict()
 
     @return_response()
     def call(self, request, func_id):
+        self.check_object_permissions(request, func_id)
         try:
             task_id = request.data['task']
             db_task = TaskModel.objects.get(pk=task_id)
-            # Check that the user has enough permissions to read
-            # data from the task.
-            self.check_object_permissions(self.request, db_task)
         except (KeyError, ObjectDoesNotExist) as err:
             raise ValidationError(
                 '`{}` lambda function was run '.format(func_id) +
@@ -580,15 +595,24 @@ class FunctionViewSet(viewsets.ViewSet):
 
         return lambda_func.invoke(db_task, request.data)
 
+@extend_schema_view(retrieve=extend_schema(
+    summary='Method returns the status of the request',
+    parameters=[
+        # specify correct type
+        OpenApiParameter('id', location=OpenApiParameter.PATH, type=OpenApiTypes.INT,
+            description='Request id'),
+    ],
+    tags=['lambda'], versions=['2.0']))
+@extend_schema_view(list=extend_schema(
+    summary='Method returns a list of requests', tags=['lambda'], versions=['2.0']))
+#TODO
+@extend_schema_view(create=extend_schema(
+    summary='Method calls the function', tags=['lambda'], versions=['2.0']))
+@extend_schema_view(delete=extend_schema(
+    summary='Method cancels the request', tags=['lambda'], versions=['2.0']))
 class RequestViewSet(viewsets.ViewSet):
-    def get_permissions(self):
-        http_method = self.request.method
-        permissions = [IsAuthenticated]
-
-        if http_method in ["POST", "DELETE"]:
-            permissions.append(auth.TaskChangePermission)
-
-        return [perm() for perm in permissions]
+    iam_organization_field = None
+    serializer_class = None
 
     @return_response()
     def list(self, request):
@@ -605,12 +629,7 @@ class RequestViewSet(viewsets.ViewSet):
             cleanup = request.data.get('cleanup', False)
             mapping = request.data.get('mapping')
             max_distance = request.data.get('max_distance')
-
-            db_task = TaskModel.objects.get(pk=task)
-            # Check that the user has enough permissions to modify
-            # the task.
-            self.check_object_permissions(self.request, db_task)
-        except (KeyError, ObjectDoesNotExist) as err:
+        except KeyError as err:
             raise ValidationError(
                 '`{}` lambda function was run '.format(request.data.get('function', 'undefined')) +
                 'with wrong arguments ({})'.format(str(err)),
@@ -626,6 +645,7 @@ class RequestViewSet(viewsets.ViewSet):
 
     @return_response()
     def retrieve(self, request, pk):
+        self.check_object_permissions(request, pk)
         queue = LambdaQueue()
         job = queue.fetch_job(pk)
 
@@ -633,6 +653,7 @@ class RequestViewSet(viewsets.ViewSet):
 
     @return_response(status.HTTP_204_NO_CONTENT)
     def delete(self, request, pk):
+        self.check_object_permissions(request, pk)
         queue = LambdaQueue()
         job = queue.fetch_job(pk)
         job.delete()

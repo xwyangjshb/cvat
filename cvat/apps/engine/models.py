@@ -4,6 +4,7 @@
 
 import os
 import re
+import shutil
 from enum import Enum
 
 from django.conf import settings
@@ -11,9 +12,8 @@ from django.contrib.auth.models import User
 from django.core.files.storage import FileSystemStorage
 from django.db import models
 from django.db.models.fields import FloatField
-from django.utils.translation import gettext_lazy as _
-
 from cvat.apps.engine.utils import parse_specific_attributes
+from cvat.apps.organizations.models import Organization
 
 class SafeCharField(models.CharField):
     def get_prep_value(self, value):
@@ -38,6 +38,35 @@ class StatusChoice(str, Enum):
     ANNOTATION = 'annotation'
     VALIDATION = 'validation'
     COMPLETED = 'completed'
+
+    @classmethod
+    def choices(cls):
+        return tuple((x.value, x.name) for x in cls)
+
+    @classmethod
+    def list(cls):
+        return list(map(lambda x: x.value, cls))
+
+    def __str__(self):
+        return self.value
+
+class StageChoice(str, Enum):
+    ANNOTATION = 'annotation'
+    VALIDATION = 'validation'
+    ACCEPTANCE = 'acceptance'
+
+    @classmethod
+    def choices(cls):
+        return tuple((x.value, x.name) for x in cls)
+
+    def __str__(self):
+        return self.value
+
+class StateChoice(str, Enum):
+    NEW = 'new'
+    IN_PROGRESS = 'in progress'
+    COMPLETED = 'completed'
+    REJECTED = 'rejected'
 
     @classmethod
     def choices(cls):
@@ -81,6 +110,19 @@ class StorageChoice(str, Enum):
     def __str__(self):
         return self.value
 
+class SortingMethod(str, Enum):
+    LEXICOGRAPHICAL = 'lexicographical'
+    NATURAL = 'natural'
+    PREDEFINED = 'predefined'
+    RANDOM = 'random'
+
+    @classmethod
+    def choices(cls):
+        return tuple((x.value, x.name) for x in cls)
+
+    def __str__(self):
+        return self.value
+
 class Data(models.Model):
     chunk_size = models.PositiveIntegerField(null=True)
     size = models.PositiveIntegerField(default=0)
@@ -95,6 +137,7 @@ class Data(models.Model):
     storage_method = models.CharField(max_length=15, choices=StorageMethodChoice.choices(), default=StorageMethodChoice.FILE_SYSTEM)
     storage = models.CharField(max_length=15, choices=StorageChoice.choices(), default=StorageChoice.LOCAL)
     cloud_storage = models.ForeignKey('CloudStorage', on_delete=models.SET_NULL, null=True, related_name='data')
+    sorting_method = models.CharField(max_length=15, choices=SortingMethod.choices(), default=SortingMethod.LEXICOGRAPHICAL)
 
     class Meta:
         default_permissions = ()
@@ -145,8 +188,23 @@ class Data(models.Model):
 
     def get_manifest_path(self):
         return os.path.join(self.get_upload_dirname(), 'manifest.jsonl')
+
     def get_index_path(self):
         return os.path.join(self.get_upload_dirname(), 'index.json')
+
+    def make_dirs(self):
+        data_path = self.get_data_dirname()
+        if os.path.isdir(data_path):
+            shutil.rmtree(data_path)
+        os.makedirs(self.get_compressed_cache_dirname())
+        os.makedirs(self.get_original_cache_dirname())
+        os.makedirs(self.get_upload_dirname())
+
+    def get_uploaded_files(self):
+        upload_dir = self.get_upload_dirname()
+        uploaded_files = [os.path.join(upload_dir, file) for file in os.listdir(upload_dir) if os.path.isfile(os.path.join(upload_dir, file))]
+        represented_files = [{'file':f} for f in uploaded_files]
+        return represented_files
 
 class Video(models.Model):
     data = models.OneToOneField(Data, on_delete=models.CASCADE, related_name="video", null=True)
@@ -168,19 +226,6 @@ class Image(models.Model):
     class Meta:
         default_permissions = ()
 
-
-class TrainingProject(models.Model):
-    class ProjectClass(models.TextChoices):
-        DETECTION = 'OD', _('Object Detection')
-
-    host = models.CharField(max_length=256)
-    username = models.CharField(max_length=256)
-    password = models.CharField(max_length=256)
-    training_id = models.CharField(max_length=64)
-    enabled = models.BooleanField(null=True)
-    project_class = models.CharField(max_length=2, choices=ProjectClass.choices, null=True, blank=True)
-
-
 class Project(models.Model):
 
     name = SafeCharField(max_length=256)
@@ -193,7 +238,8 @@ class Project(models.Model):
     updated_date = models.DateTimeField(auto_now=True)
     status = models.CharField(max_length=32, choices=StatusChoice.choices(),
                               default=StatusChoice.ANNOTATION)
-    training_project = models.ForeignKey(TrainingProject, null=True, blank=True, on_delete=models.SET_NULL)
+    organization = models.ForeignKey(Organization, null=True, default=None,
+        blank=True, on_delete=models.SET_NULL, related_name="projects")
 
     def get_project_dirname(self):
         return os.path.join(settings.PROJECTS_ROOT, str(self.id))
@@ -235,6 +281,9 @@ class Task(models.Model):
     data = models.ForeignKey(Data, on_delete=models.CASCADE, null=True, related_name="tasks")
     dimension = models.CharField(max_length=2, choices=DimensionType.choices(), default=DimensionType.DIM_2D)
     subset = models.CharField(max_length=64, blank=True, default="")
+    organization = models.ForeignKey(Organization, null=True, default=None,
+        blank=True, on_delete=models.SET_NULL, related_name="tasks")
+
 
     # Extend default permission model
     class Meta:
@@ -257,13 +306,6 @@ class Task(models.Model):
 
     def __str__(self):
         return self.name
-
-
-class TrainingProjectImage(models.Model):
-    task = models.ForeignKey(Task, on_delete=models.CASCADE)
-    idx = models.PositiveIntegerField()
-    training_image_id = models.CharField(max_length=64)
-
 
 # Redefined a couple of operation for FileSystemStorage to avoid renaming
 # or other side effects.
@@ -328,9 +370,30 @@ class Segment(models.Model):
 class Job(models.Model):
     segment = models.ForeignKey(Segment, on_delete=models.CASCADE)
     assignee = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL)
-    reviewer = models.ForeignKey(User, null=True, blank=True, related_name='review_job_set', on_delete=models.SET_NULL)
+    # TODO: it has to be deleted in Job, Task, Project and replaced by (stage, state)
+    # The stage field cannot be changed by an assignee, but state field can be. For
+    # now status is read only and it will be updated by (stage, state). Thus we don't
+    # need to update Task and Project (all should work as previously).
     status = models.CharField(max_length=32, choices=StatusChoice.choices(),
         default=StatusChoice.ANNOTATION)
+    stage = models.CharField(max_length=32, choices=StageChoice.choices(),
+        default=StageChoice.ANNOTATION)
+    state = models.CharField(max_length=32, choices=StateChoice.choices(),
+        default=StateChoice.NEW)
+
+    def get_project_id(self):
+        project = self.segment.task.project
+        return project.id if project else None
+
+    def get_bug_tracker(self):
+        task = self.segment.task
+        project = task.project
+        return task.bug_tracker or getattr(project, 'bug_tracker', None)
+
+    def get_labels(self):
+        task = self.segment.task
+        project = task.project
+        return project.label_set if project else task.label_set
 
     class Meta:
         default_permissions = ()
@@ -347,12 +410,6 @@ class Label(models.Model):
     class Meta:
         default_permissions = ()
         unique_together = ('task', 'name')
-
-
-class TrainingProjectLabel(models.Model):
-    cvat_label = models.ForeignKey(Label, on_delete=models.CASCADE, related_name='training_project_label')
-    training_label_id = models.CharField(max_length=64)
-
 
 class AttributeType(str, Enum):
     CHECKBOX = 'checkbox'
@@ -399,6 +456,7 @@ class ShapeType(str, Enum):
     POLYGON = 'polygon'     # (x0, y0, ..., xn, yn)
     POLYLINE = 'polyline'   # (x0, y0, ..., xn, yn)
     POINTS = 'points'       # (x0, y0, ..., xn, yn)
+    ELLIPSE = 'ellipse'     # (cx, cy, rx, ty)
     CUBOID = 'cuboid'       # (x0, y0, ..., x7, y7)
 
     @classmethod
@@ -411,18 +469,6 @@ class ShapeType(str, Enum):
 class SourceType(str, Enum):
     AUTO = 'auto'
     MANUAL = 'manual'
-
-    @classmethod
-    def choices(self):
-        return tuple((x.value, x.name) for x in self)
-
-    def __str__(self):
-        return self.value
-
-class ReviewStatus(str, Enum):
-    ACCEPTED = 'accepted'
-    REJECTED = 'rejected'
-    REVIEW_FURTHER = 'review_further'
 
     @classmethod
     def choices(self):
@@ -446,7 +492,7 @@ class Annotation(models.Model):
 
 class Commit(models.Model):
     id = models.BigAutoField(primary_key=True)
-    author = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL)
+    owner = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL)
     version = models.PositiveIntegerField(default=0)
     timestamp = models.DateTimeField(auto_now=True)
     message = models.CharField(max_length=4096, default="")
@@ -517,26 +563,21 @@ class Profile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE)
     rating = models.FloatField(default=0.0)
 
-class Review(models.Model):
-    job = models.ForeignKey(Job, on_delete=models.CASCADE)
-    reviewer = models.ForeignKey(User, null=True, blank=True, related_name='reviews', on_delete=models.SET_NULL)
-    assignee = models.ForeignKey(User, null=True, blank=True, related_name='reviewed', on_delete=models.SET_NULL)
-    estimated_quality = models.FloatField()
-    status = models.CharField(max_length=16, choices=ReviewStatus.choices())
-
 class Issue(models.Model):
     frame = models.PositiveIntegerField()
     position = FloatArrayField()
-    job = models.ForeignKey(Job, on_delete=models.CASCADE)
-    review = models.ForeignKey(Review, null=True, blank=True, on_delete=models.SET_NULL)
-    owner = models.ForeignKey(User, null=True, blank=True, related_name='issues', on_delete=models.SET_NULL)
-    resolver = models.ForeignKey(User, null=True, blank=True, related_name='resolved_issues', on_delete=models.SET_NULL)
+    job = models.ForeignKey(Job, related_name='issues', on_delete=models.CASCADE)
+    owner = models.ForeignKey(User, null=True, blank=True, related_name='+',
+        on_delete=models.SET_NULL)
+    assignee = models.ForeignKey(User, null=True, blank=True, related_name='+',
+        on_delete=models.SET_NULL)
     created_date = models.DateTimeField(auto_now_add=True)
-    resolved_date = models.DateTimeField(null=True, blank=True)
+    updated_date = models.DateTimeField(null=True, blank=True)
+    resolved = models.BooleanField(default=False)
 
 class Comment(models.Model):
-    issue = models.ForeignKey(Issue, on_delete=models.CASCADE)
-    author = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL)
+    issue = models.ForeignKey(Issue, related_name='comments', on_delete=models.CASCADE)
+    owner = models.ForeignKey(User, null=True, blank=True, on_delete=models.SET_NULL)
     message = models.TextField(default='')
     created_date = models.DateTimeField(auto_now_add=True)
     updated_date = models.DateTimeField(auto_now=True)
@@ -607,10 +648,13 @@ class CloudStorage(models.Model):
     credentials_type = models.CharField(max_length=29, choices=CredentialsTypeChoice.choices())#auth_type
     specific_attributes = models.CharField(max_length=128, blank=True)
     description = models.TextField(blank=True)
+    organization = models.ForeignKey(Organization, null=True, default=None,
+        blank=True, on_delete=models.SET_NULL, related_name="cloudstorages")
+
 
     class Meta:
         default_permissions = ()
-        unique_together = (('provider_type', 'resource', 'credentials'),)
+        unique_together = ('provider_type', 'resource', 'credentials')
 
     def __str__(self):
         return "{} {} {}".format(self.provider_type, self.display_name, self.id)

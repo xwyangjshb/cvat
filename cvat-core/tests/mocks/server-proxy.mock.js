@@ -1,4 +1,4 @@
-// Copyright (C) 2020-2021 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
 //
 // SPDX-License-Identifier: MIT
 
@@ -76,7 +76,7 @@ class ServerProxy {
         }
 
         async function getProjects(filter = '') {
-            const queries = QueryStringToJSON(filter, ['without_tasks']);
+            const queries = QueryStringToJSON(filter);
             const result = projectsDummyData.results.filter((x) => {
                 for (const key in queries) {
                     if (Object.prototype.hasOwnProperty.call(queries, key)) {
@@ -113,7 +113,7 @@ class ServerProxy {
             const id = Math.max(...projectsDummyData.results.map((el) => el.id)) + 1;
             projectsDummyData.results.push({
                 id,
-                url: `http://localhost:7000/api/v1/projects/${id}`,
+                url: `http://localhost:7000/api/projects/${id}`,
                 name: projectData.name,
                 owner: 1,
                 assignee: null,
@@ -170,13 +170,16 @@ class ServerProxy {
                     }
                 }
             }
+
+            const [updatedTask] = await getTasks({ id });
+            return updatedTask;
         }
 
         async function createTask(taskData) {
             const id = Math.max(...tasksDummyData.results.map((el) => el.id)) + 1;
             tasksDummyData.results.push({
                 id,
-                url: `http://localhost:7000/api/v1/tasks/${id}`,
+                url: `http://localhost:7000/api/tasks/${id}`,
                 name: taskData.name,
                 project_id: taskData.project_id || null,
                 size: 5000,
@@ -209,7 +212,8 @@ class ServerProxy {
             }
         }
 
-        async function getJob(jobID) {
+        async function getJobs(filter = {}) {
+            const id = filter.id || null;
             const jobs = tasksDummyData.results
                 .reduce((acc, task) => {
                     for (const segment of task.segments) {
@@ -218,6 +222,12 @@ class ServerProxy {
                             copy.start_frame = segment.start_frame;
                             copy.stop_frame = segment.stop_frame;
                             copy.task_id = task.id;
+                            copy.dimension = task.dimension;
+                            copy.data_compressed_chunk_type = task.data_compressed_chunk_type;
+                            copy.data_chunk_size = task.data_chunk_size;
+                            copy.bug_tracker = task.bug_tracker;
+                            copy.mode = task.mode;
+                            copy.labels = task.labels;
 
                             acc.push(copy);
                         }
@@ -225,7 +235,7 @@ class ServerProxy {
 
                     return acc;
                 }, [])
-                .filter((job) => job.id === jobID);
+                .filter((job) => job.id === id);
 
             return (
                 jobs[0] || {
@@ -255,6 +265,8 @@ class ServerProxy {
                     object[prop] = jobData[prop];
                 }
             }
+
+            return getJobs({ id });
         }
 
         async function getUsers() {
@@ -402,17 +414,17 @@ class ServerProxy {
 
                 tasks: {
                     value: Object.freeze({
-                        getTasks,
-                        saveTask,
-                        createTask,
-                        deleteTask,
+                        get: getTasks,
+                        save: saveTask,
+                        create: createTask,
+                        delete: deleteTask,
                     }),
                     writable: false,
                 },
 
                 jobs: {
                     value: Object.freeze({
-                        get: getJob,
+                        get: getJobs,
                         save: saveJob,
                     }),
                     writable: false,

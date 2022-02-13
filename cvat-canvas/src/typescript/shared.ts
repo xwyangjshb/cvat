@@ -1,4 +1,4 @@
-// Copyright (C) 2019-2021 Intel Corporation
+// Copyright (C) 2019-2022 Intel Corporation
 //
 // SPDX-License-Identifier: MIT
 
@@ -97,7 +97,7 @@ export function displayShapeSize(shapesContainer: SVG.Container, textContainer: 
             .addClass('cvat_canvas_text'),
         update(shape: SVG.Shape): void {
             let text = `${Math.round(shape.width())}x${Math.round(shape.height())}px`;
-            if (shape.type === 'rect') {
+            if (shape.type === 'rect' || shape.type === 'ellipse') {
                 let rotation = shape.transform().rotation || 0;
                 // be sure, that rotation in range [0; 360]
                 while (rotation < 0) rotation += 360;
@@ -188,6 +188,22 @@ export function parsePoints(source: string | number[]): Point[] {
         );
 }
 
+export function readPointsFromShape(shape: SVG.Shape): number[] {
+    let points = null;
+    if (shape.type === 'ellipse') {
+        const [rx, ry] = [+shape.attr('rx'), +shape.attr('ry')];
+        const [cx, cy] = [+shape.attr('cx'), +shape.attr('cy')];
+        points = `${cx},${cy} ${cx + rx},${cy - ry}`;
+    } else if (shape.type === 'rect') {
+        points = `${shape.attr('x')},${shape.attr('y')} ` +
+            `${shape.attr('x') + shape.attr('width')},${shape.attr('y') + shape.attr('height')}`;
+    } else {
+        points = shape.attr('points');
+    }
+
+    return pointsToNumberArray(points);
+}
+
 export function stringifyPoints(points: (Point | number)[]): string {
     if (typeof points[0] === 'number') {
         return points.reduce((acc: string, val: number, idx: number): string => {
@@ -217,6 +233,10 @@ export function vectorLength(vector: Vector2D): number {
 
 export function translateToCanvas(offset: number, points: number[]): number[] {
     return points.map((coord: number): number => coord + offset);
+}
+
+export function translateFromCanvas(offset: number, points: number[]): number[] {
+    return points.map((coord: number): number => coord - offset);
 }
 
 export type PropType<T, Prop extends keyof T> = T[Prop];

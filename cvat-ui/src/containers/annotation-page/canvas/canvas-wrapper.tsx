@@ -1,4 +1,4 @@
-// Copyright (C) 2020-2021 Intel Corporation
+// Copyright (C) 2020-2022 Intel Corporation
 //
 // SPDX-License-Identifier: MIT
 
@@ -58,7 +58,6 @@ interface StateToProps {
     activatedStateID: number | null;
     activatedAttributeID: number | null;
     annotations: any[];
-    frameIssues: any[] | null;
     frameData: any;
     frameAngle: number;
     frameFetching: boolean;
@@ -83,6 +82,9 @@ interface StateToProps {
     smoothImage: boolean;
     aamZoomMargin: number;
     showObjectsTextAlways: boolean;
+    textFontSize: number;
+    textPosition: 'auto' | 'center';
+    textContent: string;
     showAllInterpolationTracks: boolean;
     workspace: Workspace;
     minZLayer: number;
@@ -164,12 +166,14 @@ function mapStateToProps(state: CombinedState): StateToProps {
                 showAllInterpolationTracks,
                 automaticBordering,
                 intelligentPolygonCrop,
+                textFontSize,
+                textPosition,
+                textContent,
             },
             shapes: {
                 opacity, colorBy, selectedOpacity, outlined, outlineColor, showBitmap, showProjections,
             },
         },
-        review: { frameIssues, issuesHidden },
         shortcuts: { keyMap },
     } = state;
 
@@ -177,8 +181,6 @@ function mapStateToProps(state: CombinedState): StateToProps {
         sidebarCollapsed,
         canvasInstance,
         jobInstance,
-        frameIssues:
-            issuesHidden || ![Workspace.REVIEW_WORKSPACE, Workspace.STANDARD].includes(workspace) ? null : frameIssues,
         frameData,
         frameAngle: frameAngles[frame - jobInstance.startFrame],
         frameFetching,
@@ -206,6 +208,9 @@ function mapStateToProps(state: CombinedState): StateToProps {
         smoothImage,
         aamZoomMargin,
         showObjectsTextAlways,
+        textFontSize,
+        textPosition,
+        textContent,
         showAllInterpolationTracks,
         curZLayer,
         minZLayer,
