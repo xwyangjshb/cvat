@@ -357,7 +357,7 @@ class JobUpdateAPITestCase(APITestCase):
     def test_api_v2_jobs_id_annotator(self):
         data = {"stage": StageChoice.ANNOTATION, "assignee": self.annotator.id}
         response = self._run_api_v2_jobs_id(self.job.id, self.annotator, data)
-        self._check_request(response, data)
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         response = self._run_api_v2_jobs_id(self.job.id + 10, self.annotator, data)
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
 
@@ -391,8 +391,8 @@ class JobPartialUpdateAPITestCase(JobUpdateAPITestCase):
 
     def test_api_v2_jobs_id_annotator_partial(self):
         data = {"stage": StageChoice.ANNOTATION}
-        response = self._run_api_v2_jobs_id(self.job.id, self.owner, data)
-        self._check_request(response, data)
+        response = self._run_api_v2_jobs_id(self.job.id, self.annotator, data)
+        self.assertEquals(response.status_code, status.HTTP_403_FORBIDDEN, response)
 
     def test_api_v2_jobs_id_admin_partial(self):
         data = {"assignee_id": self.user.id}
@@ -4118,7 +4118,7 @@ class JobAnnotationAPITestCase(APITestCase):
     def _check_response(self, response, data):
         if not response.status_code in [
             status.HTTP_403_FORBIDDEN, status.HTTP_401_UNAUTHORIZED]:
-            compare_objects(self, data, response.data, ignore_keys=["id"])
+            compare_objects(self, data, response.data, ignore_keys=["id", "version"])
 
     def _run_api_v2_jobs_id_annotations(self, owner, assignee, annotator):
         task, jobs = self._create_task(owner, assignee)
@@ -4603,7 +4603,7 @@ class TaskAnnotationAPITestCase(JobAnnotationAPITestCase):
         if not response.status_code in [
             status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN]:
             try:
-                compare_objects(self, data, response.data, ignore_keys=["id"])
+                compare_objects(self, data, response.data, ignore_keys=["id", "version"])
             except AssertionError as e:
                 print("Objects are not equal: ", data, response.data)
                 print(e)

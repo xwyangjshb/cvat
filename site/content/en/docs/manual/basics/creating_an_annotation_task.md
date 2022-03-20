@@ -5,8 +5,11 @@ weight: 2
 description: 'Instructions on how to create and configure an annotation task.'
 ---
 
-Create an annotation task pressing `Create new task` button on the tasks page or on the project page.
+Create an annotation task pressing `+` button and select `Create new task` on the tasks page or on the project page.
 ![](/images/image004.jpg)
+
+> Notice that the task will be created in the organization that you selected at the time of creation.
+> Read more about [organizations](/docs/manual/advanced/organization/).
 
 Specify parameters of the task:
 
@@ -153,7 +156,7 @@ Use this option to specify quality of uploaded images.
 The option helps to load high resolution datasets faster.
 Use the value from `5` (almost completely compressed images) to `100` (not compressed images).
 
-## Overlap Size
+### Overlap Size
 
 Use this option to make overlapped segments.
 The option makes tracks continuous from one segment into another.
@@ -223,6 +226,11 @@ Supported URL formats :
 - `git@github.com:project/repos[.git]`
 
 After the task is created, the synchronization status is displayed on the task page.
+
+If you specify a dataset repository, when you create a task, you will see a message
+about the need to grant access with the ssh key.
+This is the key you need to [add to your github account](https://github.com/settings/keys).
+For other git systems, you can learn about adding an ssh key in their documentation.
 
 ### Use LFS
 

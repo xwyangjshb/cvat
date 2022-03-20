@@ -1,4 +1,4 @@
-# Copyright (C) 2018-2021 Intel Corporation
+# Copyright (C) 2018-2022 Intel Corporation
 #
 # SPDX-License-Identifier: MIT
 
@@ -22,7 +22,6 @@ from django.contrib.auth.models import User
 from django.db import IntegrityError
 from django.http import HttpResponse, HttpResponseNotFound, HttpResponseBadRequest
 from django.utils import timezone
-from django_filters import rest_framework as filters
 
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import (
@@ -48,9 +47,9 @@ from cvat.apps.engine.frame_provider import FrameProvider
 from cvat.apps.engine.media_extractors import ImageListReader
 from cvat.apps.engine.mime_types import mimetypes
 from cvat.apps.engine.models import (
-    Job, StatusChoice, Task, Project, Issue, Data,
+    Job, Task, Project, Issue, Data,
     Comment, StorageMethodChoice, StorageChoice, Image,
-    CredentialsTypeChoice, CloudProviderChoice
+    CloudProviderChoice
 )
 from cvat.apps.engine.models import CloudStorage as CloudStorageModel
 from cvat.apps.engine.serializers import (
@@ -60,7 +59,7 @@ from cvat.apps.engine.serializers import (
     LogEventSerializer, ProjectSerializer, ProjectSearchSerializer,
     RqStatusSerializer, TaskSerializer, UserSerializer, PluginsSerializer, IssueReadSerializer,
     IssueWriteSerializer, CommentReadSerializer, CommentWriteSerializer, CloudStorageWriteSerializer,
-    CloudStorageReadSerializer, DatasetFileSerializer)
+    CloudStorageReadSerializer, DatasetFileSerializer, JobCommitSerializer)
 
 from utils.dataset_manifest import ImageManifestManager
 from cvat.apps.engine.utils import av_scan_paths
@@ -73,6 +72,7 @@ from cvat.apps.iam.permissions import (CloudStoragePermission,
     CommentPermission, IssuePermission, JobPermission, ProjectPermission,
     TaskPermission, UserPermission)
 
+@extend_schema(tags=['server'])
 class ServerViewSet(viewsets.ViewSet):
     serializer_class = None
     iam_organization_field = None
@@ -86,8 +86,7 @@ class ServerViewSet(viewsets.ViewSet):
     @extend_schema(summary='Method provides basic CVAT information',
         responses={
             '200': AboutSerializer,
-        },
-        tags=['server'], versions=['2.0'])
+        })
     @action(detail=False, methods=['GET'], serializer_class=AboutSerializer)
     def about(request):
         from cvat import __version__ as cvat_version
@@ -111,8 +110,7 @@ class ServerViewSet(viewsets.ViewSet):
         description='Sends logs to the ELK if it is connected',
         request=ExceptionSerializer, responses={
             '201': ExceptionSerializer,
-        },
-        tags=['server'], versions=['2.0'])
+        })
     @action(detail=False, methods=['POST'], serializer_class=ExceptionSerializer)
     def exception(request):
         serializer = ExceptionSerializer(data=request.data)
@@ -139,7 +137,7 @@ class ServerViewSet(viewsets.ViewSet):
         request=LogEventSerializer(many=True),
         responses={
             '201': LogEventSerializer(many=True),
-        }, tags=['server'], versions=['2.0'])
+        })
     @action(detail=False, methods=['POST'], serializer_class=LogEventSerializer)
     def logs(request):
         serializer = LogEventSerializer(many=True, data=request.data)
@@ -166,7 +164,7 @@ class ServerViewSet(viewsets.ViewSet):
         ],
         responses={
             '200' : FileInfoSerializer(many=True)
-        }, tags=['server'], versions=['2.0'])
+        })
     @action(detail=False, methods=['GET'], serializer_class=FileInfoSerializer)
     def share(request):
         param = request.query_params.get('directory', '/')
@@ -199,7 +197,7 @@ class ServerViewSet(viewsets.ViewSet):
         summary='Method provides the list of supported annotations formats',
         responses={
             '200': DatasetFormatsSerializer,
-        }, tags=['server'], versions=['2.0'])
+        })
     @action(detail=False, methods=['GET'], url_path='annotation/formats')
     def annotation_formats(request):
         data = dm.views.get_all_formats()
@@ -210,7 +208,7 @@ class ServerViewSet(viewsets.ViewSet):
         summary='Method provides allowed plugins',
         responses={
             '200': PluginsSerializer,
-        }, tags=['server'], versions=['2.0'])
+        })
     @action(detail=False, methods=['GET'], url_path='plugins', serializer_class=PluginsSerializer)
     def plugins(request):
         response = {
@@ -221,81 +219,62 @@ class ServerViewSet(viewsets.ViewSet):
         }
         return Response(response)
 
-
-class ProjectFilter(filters.FilterSet):
-    name = filters.CharFilter(field_name="name", lookup_expr="icontains")
-    owner = filters.CharFilter(field_name="owner__username", lookup_expr="icontains")
-    assignee = filters.CharFilter(field_name="assignee__username", lookup_expr="icontains")
-    status = filters.CharFilter(field_name="status", lookup_expr="icontains")
-
-    class Meta:
-        model = models.Project
-        fields = ("id", "name", "owner", "status")
-
-@extend_schema_view(list=extend_schema(
-    summary='Returns a paginated list of projects according to query parameters (12 projects per page)',
-    parameters=[
-        OpenApiParameter('id', description='A unique number value identifying this project',
-            location=OpenApiParameter.QUERY, type=OpenApiTypes.NUMBER),
-        OpenApiParameter('name', description='Find all projects where name contains a parameter value',
-            location=OpenApiParameter.QUERY, type=OpenApiTypes.STR),
-        OpenApiParameter('owner', description='Find all project where owner name contains a parameter value',
-            location=OpenApiParameter.QUERY, type=OpenApiTypes.STR),
-        OpenApiParameter('status', description='Find all projects with a specific status',
-            location=OpenApiParameter.QUERY, type=OpenApiTypes.STR, enum=StatusChoice.list()),
-        OpenApiParameter('names_only', description="Returns only names and id's of projects",
-            location=OpenApiParameter.QUERY, type=OpenApiTypes.BOOL)
-    ],
-    responses={
-        '200': PolymorphicProxySerializer(component_name='PolymorphicProject',
-            serializers=[
-                ProjectSerializer, ProjectSearchSerializer,
-            ], resource_type_field_name='name', many=True),
-        }, tags=['projects'], versions=['2.0']))
-@extend_schema_view(create=extend_schema(
-    summary='Method creates a new project',
-    responses={
-        '201': ProjectSerializer,
-    }, tags=['projects'], versions=['2.0']))
-@extend_schema_view(retrieve=extend_schema(
-    summary='Method returns details of a specific project',
-    responses={
-        '200': ProjectSerializer,
-    }, tags=['projects'], versions=['2.0']))
-@extend_schema_view(destroy=extend_schema(
-    summary='Method deletes a specific project',
-    responses={
-        '204': OpenApiResponse(description='The project has been deleted'),
-    }, tags=['projects'], versions=['2.0']))
-@extend_schema_view(partial_update=extend_schema(
-    summary='Methods does a partial update of chosen fields in a project',
-    responses={
-        '200': ProjectSerializer,
-    }, tags=['projects'], versions=['2.0']))
+@extend_schema(tags=['projects'])
+@extend_schema_view(
+    list=extend_schema(
+        summary='Returns a paginated list of projects according to query parameters (12 projects per page)',
+        responses={
+            '200': PolymorphicProxySerializer(component_name='PolymorphicProject',
+                serializers=[
+                    ProjectSerializer, ProjectSearchSerializer,
+                ], resource_type_field_name='name', many=True),
+        }),
+    create=extend_schema(
+        summary='Method creates a new project',
+        responses={
+            '201': ProjectSerializer,
+        }),
+    retrieve=extend_schema(
+        summary='Method returns details of a specific project',
+        responses={
+            '200': ProjectSerializer,
+        }),
+    destroy=extend_schema(
+        summary='Method deletes a specific project',
+        responses={
+            '204': OpenApiResponse(description='The project has been deleted'),
+        }),
+    partial_update=extend_schema(
+        summary='Methods does a partial update of chosen fields in a project',
+        responses={
+            '200': ProjectSerializer,
+        })
+)
 class ProjectViewSet(viewsets.ModelViewSet):
     queryset = models.Project.objects.prefetch_related(Prefetch('label_set',
         queryset=models.Label.objects.order_by('id')
     ))
 
-    search_fields = ("name", "owner__username", "assignee__username", "status")
-    filterset_class = ProjectFilter
-    ordering_fields = ("id", "name", "owner", "status", "assignee")
-    ordering = ("-id",)
-    http_method_names = ('get', 'post', 'head', 'patch', 'delete')
+    # NOTE: The search_fields attribute should be a list of names of text
+    # type fields on the model,such as CharField or TextField
+    search_fields = ('name', 'owner', 'assignee', 'status')
+    filter_fields = list(search_fields) + ['id', 'updated_date']
+    ordering_fields = filter_fields
+    ordering = "-id"
+    lookup_fields = {'owner': 'owner__username', 'assignee': 'assignee__username'}
+    http_method_names = ('get', 'post', 'head', 'patch', 'delete', 'options')
     iam_organization_field = 'organization'
 
     def get_serializer_class(self):
         if self.request.path.endswith('tasks'):
             return TaskSerializer
-        if self.request.query_params and self.request.query_params.get("names_only") == "true":
-            return ProjectSearchSerializer
         else:
             return ProjectSerializer
 
     def get_queryset(self):
         queryset = super().get_queryset()
         if self.action == 'list':
-            perm = ProjectPermission('list', self.request, self)
+            perm = ProjectPermission.create_scope_list(self.request)
             queryset = perm.filter(queryset)
         return queryset
 
@@ -307,7 +286,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
         summary='Method returns information of the tasks of the project with the selected id',
         responses={
             '200': TaskSerializer(many=True),
-        }, tags=['projects'], versions=['2.0'])
+        })
     @action(detail=True, methods=['GET'], serializer_class=TaskSerializer)
     def tasks(self, request, pk):
         self.get_object() # force to call check_object_permissions
@@ -339,7 +318,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
             '201': OpenApiResponse(description='Output file is ready for downloading'),
             '202': OpenApiResponse(description='Exporting has been started'),
             '405': OpenApiResponse(description='Format is not available'),
-        }, tags=['projects'], versions=['2.0'])
+        })
     @extend_schema(methods=['POST'], summary='Import dataset in specific format as a project',
         parameters=[
             OpenApiParameter('format', description='Desired dataset format name\n'
@@ -350,7 +329,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
             '202': OpenApiResponse(description='Exporting has been started'),
             '400': OpenApiResponse(description='Failed to import dataset'),
             '405': OpenApiResponse(description='Format is not available'),
-        }, tags=['projects'], versions=['2.0'])
+        })
     @action(detail=True, methods=['GET', 'POST'], serializer_class=None,
         url_path='dataset')
     def dataset(self, request, pk):
@@ -419,7 +398,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
             '202': OpenApiResponse(description='Dump of annotations has been started'),
             '401': OpenApiResponse(description='Format is not specified'),
             '405': OpenApiResponse(description='Format is not available'),
-        }, tags=['projects'], versions=['2.0'])
+        })
     @action(detail=True, methods=['GET'],
         serializer_class=LabeledDataSerializer)
     def annotations(self, request, pk):
@@ -442,7 +421,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
             '200': OpenApiResponse(description='Download of file started'),
             '201': OpenApiResponse(description='Output backup file is ready for downloading'),
             '202': OpenApiResponse(description='Creating a backup file has been started'),
-        }, tags=['projects'], versions=['2.0'])
+        })
     @action(methods=['GET'], detail=True, url_path='backup')
     def export_backup(self, request, pk=None):
         db_project = self.get_object() # force to call check_object_permissions
@@ -452,7 +431,7 @@ class ProjectViewSet(viewsets.ModelViewSet):
         responses={
             '201': OpenApiResponse(description='The project has been imported'), # or better specify {id: project_id}
             '202': OpenApiResponse(description='Importing a backup file has been started'),
-        }, tags=['projects'], versions=['2.0'])
+        })
     @action(detail=False, methods=['POST'], url_path='backup')
     def import_backup(self, request, pk=None):
         return backup.import_project(request)
@@ -525,7 +504,7 @@ class DataChunkGetter:
                 raise ValidationError('The frame number should be in ' +
                     f'[{start}, {stop}] range')
 
-            buf, (mime, _) = frame_provider.get_frame(self.number, self.quality)
+            buf, mime = frame_provider.get_frame(self.number, self.quality)
             return HttpResponse(buf.getvalue(), content_type=mime)
 
         elif self.type == 'preview':
@@ -550,77 +529,54 @@ class DataChunkGetter:
             return Response(data='unknown data type {}.'.format(self.type),
                 status=status.HTTP_400_BAD_REQUEST)
 
-class TaskFilter(filters.FilterSet):
-    project = filters.CharFilter(field_name="project__name", lookup_expr="icontains")
-    name = filters.CharFilter(field_name="name", lookup_expr="icontains")
-    owner = filters.CharFilter(field_name="owner__username", lookup_expr="icontains")
-    mode = filters.CharFilter(field_name="mode", lookup_expr="icontains")
-    status = filters.CharFilter(field_name="status", lookup_expr="icontains")
-    assignee = filters.CharFilter(field_name="assignee__username", lookup_expr="icontains")
-
-    class Meta:
-        model = Task
-        fields = ("id", "project_id", "project", "name", "owner", "mode", "status",
-            "assignee")
-
-@extend_schema_view(list=extend_schema(
-    summary='Returns a paginated list of tasks according to query parameters (10 tasks per page)',
-    parameters=[
-        OpenApiParameter('id', description='A unique number value identifying this task',
-            location=OpenApiParameter.QUERY, type=OpenApiTypes.NUMBER),
-        OpenApiParameter('name', description='Find all tasks where name contains a parameter value',
-            location=OpenApiParameter.QUERY, type=OpenApiTypes.STR),
-        OpenApiParameter('owner', description='Find all tasks where owner name contains a parameter value',
-            location=OpenApiParameter.QUERY, type=OpenApiTypes.STR),
-        OpenApiParameter('mode', description='Find all tasks with a specific mode',
-            location=OpenApiParameter.QUERY, type=OpenApiTypes.STR, enum=['annotation', 'interpolation']),
-        OpenApiParameter('status', description='Find all tasks with a specific status',
-            location=OpenApiParameter.QUERY, type=OpenApiTypes.STR, enum=StatusChoice.list()),
-        OpenApiParameter('assignee', description='Find all tasks where assignee name contains a parameter value',
-            location=OpenApiParameter.QUERY, type=OpenApiTypes.STR)
-    ],
-    responses={
-        '200': TaskSerializer(many=True),
-    }, tags=['tasks'], versions=['2.0']))
-@extend_schema_view(create=extend_schema(
-    summary='Method creates a new task in a database without any attached images and videos',
-    responses={
-        '201': TaskSerializer,
-    }, tags=['tasks'], versions=['2.0']))
-@extend_schema_view(retrieve=extend_schema(
-    summary='Method returns details of a specific task',
-    responses=TaskSerializer, tags=['tasks'], versions=['2.0']))
-@extend_schema_view(update=extend_schema(
-    summary='Method updates a task by id',
-    responses={
-        '200': TaskSerializer,
-    }, tags=['tasks'], versions=['2.0']))
-@extend_schema_view(destroy=extend_schema(
-    summary='Method deletes a specific task, all attached jobs, annotations, and data',
-    responses={
-        '204': OpenApiResponse(description='The task has been deleted'),
-    }, tags=['tasks'], versions=['2.0']))
-@extend_schema_view(partial_update=extend_schema(
-    summary='Methods does a partial update of chosen fields in a task',
-    responses={
-        '200': TaskSerializer,
-    }, tags=['tasks'], versions=['2.0']))
+@extend_schema(tags=['tasks'])
+@extend_schema_view(
+    list=extend_schema(
+        summary='Returns a paginated list of tasks according to query parameters (10 tasks per page)',
+        responses={
+            '200': TaskSerializer(many=True),
+        }),
+    create=extend_schema(
+        summary='Method creates a new task in a database without any attached images and videos',
+        responses={
+            '201': TaskSerializer,
+        }),
+    retrieve=extend_schema(
+        summary='Method returns details of a specific task',
+        responses=TaskSerializer),
+    update=extend_schema(
+        summary='Method updates a task by id',
+        responses={
+            '200': TaskSerializer,
+        }),
+    destroy=extend_schema(
+        summary='Method deletes a specific task, all attached jobs, annotations, and data',
+        responses={
+            '204': OpenApiResponse(description='The task has been deleted'),
+        }),
+    partial_update=extend_schema(
+        summary='Methods does a partial update of chosen fields in a task',
+        responses={
+            '200': TaskSerializer,
+        })
+)
 class TaskViewSet(UploadMixin, viewsets.ModelViewSet):
     queryset = Task.objects.prefetch_related(
             Prefetch('label_set', queryset=models.Label.objects.order_by('id')),
             "label_set__attributespec_set",
-            "segment_set__job_set",
-        ).order_by('-id')
+            "segment_set__job_set")
     serializer_class = TaskSerializer
-    search_fields = ("name", "owner__username", "mode", "status")
-    filterset_class = TaskFilter
-    ordering_fields = ("id", "name", "owner", "status", "assignee", "subset")
+    lookup_fields = {'project_name': 'project__name', 'owner': 'owner__username', 'assignee': 'assignee__username'}
+    search_fields = ('project_name', 'name', 'owner', 'status', 'assignee', 'subset', 'mode', 'dimension')
+    filter_fields = list(search_fields) + ['id', 'project_id', 'updated_date']
+    ordering_fields = filter_fields
+    ordering = "-id"
     iam_organization_field = 'organization'
 
     def get_queryset(self):
         queryset = super().get_queryset()
         if self.action == 'list':
-            perm = TaskPermission('list', self.request, self)
+            perm = TaskPermission.create_scope_list(self.request)
             queryset = perm.filter(queryset)
 
         return queryset
@@ -629,7 +585,7 @@ class TaskViewSet(UploadMixin, viewsets.ModelViewSet):
         responses={
             '201': OpenApiResponse(description='The task has been imported'), # or better specify {id: task_id}
             '202': OpenApiResponse(description='Importing a backup file has been started'),
-        }, tags=['tasks'], versions=['2.0'])
+        })
     @action(detail=False, methods=['POST'], url_path='backup')
     def import_backup(self, request, pk=None):
         return backup.import_task(request)
@@ -639,7 +595,7 @@ class TaskViewSet(UploadMixin, viewsets.ModelViewSet):
             '200': OpenApiResponse(description='Download of file started'),
             '201': OpenApiResponse(description='Output backup file is ready for downloading'),
             '202': OpenApiResponse(description='Creating a backup file has been started'),
-        }, tags=['tasks'], versions=['2.0'])
+        })
     @action(methods=['GET'], detail=True, url_path='backup')
     def export_backup(self, request, pk=None):
         db_task = self.get_object() # force to call check_object_permissions
@@ -675,7 +631,7 @@ class TaskViewSet(UploadMixin, viewsets.ModelViewSet):
     @extend_schema(summary='Method returns a list of jobs for a specific task',
         responses={
             '200': JobReadSerializer(many=True),
-        }, tags=['tasks'], versions=['2.0'])
+        })
     @action(detail=True, methods=['GET'], serializer_class=JobReadSerializer)
     def jobs(self, request, pk):
         self.get_object() # force to call check_object_permissions
@@ -685,39 +641,67 @@ class TaskViewSet(UploadMixin, viewsets.ModelViewSet):
 
         return Response(serializer.data)
 
+    # UploadMixin method
+    def get_upload_dir(self):
+        if 'annotations' in self.action:
+            return self._object.get_tmp_dirname()
+        elif 'data' in self.action:
+            return self._object.data.get_upload_dirname()
+        return ""
+
+    # UploadMixin method
     def upload_finished(self, request):
-        db_task = self.get_object() # call check_object_permissions as well
-        task_data = db_task.data
-        serializer = DataSerializer(task_data, data=request.data)
-        serializer.is_valid(raise_exception=True)
-        data = dict(serializer.validated_data.items())
-        uploaded_files = task_data.get_uploaded_files()
-        uploaded_files.extend(data.get('client_files'))
-        serializer.validated_data.update({'client_files': uploaded_files})
+        if self.action == 'annotations':
+            format_name = request.query_params.get("format", "")
+            filename = request.query_params.get("filename", "")
+            tmp_dir = self._object.get_tmp_dirname()
+            if os.path.isfile(os.path.join(tmp_dir, filename)):
+                annotation_file = os.path.join(tmp_dir, filename)
+                return _import_annotations(
+                        request=request,
+                        filename=annotation_file,
+                        rq_id="{}@/api/tasks/{}/annotations/upload".format(request.user, self._object.pk),
+                        rq_func=dm.task.import_task_annotations,
+                        pk=self._object.pk,
+                        format_name=format_name,
+                    )
+            else:
+                return Response(data='No such file were uploaded',
+                        status=status.HTTP_400_BAD_REQUEST)
+        elif self.action == 'data':
+            task_data = self._object.data
+            serializer = DataSerializer(task_data, data=request.data)
+            serializer.is_valid(raise_exception=True)
+            data = dict(serializer.validated_data.items())
+            uploaded_files = task_data.get_uploaded_files()
+            uploaded_files.extend(data.get('client_files'))
+            serializer.validated_data.update({'client_files': uploaded_files})
 
-        db_data = serializer.save()
-        db_task.data = db_data
-        db_task.save()
-        data = {k: v for k, v in serializer.data.items()}
+            db_data = serializer.save()
+            self._object.data = db_data
+            self._object.save()
+            data = {k: v for k, v in serializer.data.items()}
 
-        data['use_zip_chunks'] = serializer.validated_data['use_zip_chunks']
-        data['use_cache'] = serializer.validated_data['use_cache']
-        data['copy_data'] = serializer.validated_data['copy_data']
-        if data['use_cache']:
-            db_task.data.storage_method = StorageMethodChoice.CACHE
-            db_task.data.save(update_fields=['storage_method'])
-        if data['server_files'] and not data.get('copy_data'):
-            db_task.data.storage = StorageChoice.SHARE
-            db_task.data.save(update_fields=['storage'])
-        if db_data.cloud_storage:
-            db_task.data.storage = StorageChoice.CLOUD_STORAGE
-            db_task.data.save(update_fields=['storage'])
-            # if the value of stop_frame is 0, then inside the function we cannot know
-            # the value specified by the user or it's default value from the database
-        if 'stop_frame' not in serializer.validated_data:
-            data['stop_frame'] = None
-        task.create(db_task.id, data)
-        return Response(serializer.data, status=status.HTTP_202_ACCEPTED)
+            data['use_zip_chunks'] = serializer.validated_data['use_zip_chunks']
+            data['use_cache'] = serializer.validated_data['use_cache']
+            data['copy_data'] = serializer.validated_data['copy_data']
+            if data['use_cache']:
+                self._object.data.storage_method = StorageMethodChoice.CACHE
+                self._object.data.save(update_fields=['storage_method'])
+            if data['server_files'] and not data.get('copy_data'):
+                self._object.data.storage = StorageChoice.SHARE
+                self._object.data.save(update_fields=['storage'])
+            if db_data.cloud_storage:
+                self._object.data.storage = StorageChoice.CLOUD_STORAGE
+                self._object.data.save(update_fields=['storage'])
+                # if the value of stop_frame is 0, then inside the function we cannot know
+                # the value specified by the user or it's default value from the database
+            if 'stop_frame' not in serializer.validated_data:
+                data['stop_frame'] = None
+            task.create(self._object.id, data)
+            return Response(serializer.data, status=status.HTTP_202_ACCEPTED)
+        return Response(data='Unknown upload was finished',
+                        status=status.HTTP_400_BAD_REQUEST)
 
     @extend_schema(methods=['POST'],
         summary='Method permanently attaches images or video to a task. Supports tus uploads, see more https://tus.io/',
@@ -732,7 +716,7 @@ class TaskViewSet(UploadMixin, viewsets.ModelViewSet):
         ],
         responses={
             '202': OpenApiResponse(description=''),
-        }, tags=['tasks'], versions=['2.0'])
+        })
     @extend_schema(methods=['GET'], summary='Method returns data for a specific task',
         parameters=[
             OpenApiParameter('type', location=OpenApiParameter.QUERY, required=True,
@@ -746,17 +730,17 @@ class TaskViewSet(UploadMixin, viewsets.ModelViewSet):
         ],
         responses={
             '200': OpenApiResponse(description='Data of a specific type'),
-        }, tags=['tasks'], versions=['2.0'])
+        })
     @action(detail=True, methods=['OPTIONS', 'POST', 'GET'], url_path=r'data/?$')
     def data(self, request, pk):
-        db_task = self.get_object() # call check_object_permissions as well
+        self._object = self.get_object() # call check_object_permissions as well
         if request.method == 'POST' or request.method == 'OPTIONS':
-            task_data = db_task.data
+            task_data = self._object.data
             if not task_data:
                 task_data = Data.objects.create()
                 task_data.make_dirs()
-                db_task.data = task_data
-                db_task.save()
+                self._object.data = task_data
+                self._object.save()
             elif task_data.size != 0:
                 return Response(data='Adding more data is not supported',
                     status=status.HTTP_400_BAD_REQUEST)
@@ -768,10 +752,15 @@ class TaskViewSet(UploadMixin, viewsets.ModelViewSet):
             data_quality = request.query_params.get('quality', 'compressed')
 
             data_getter = DataChunkGetter(data_type, data_num, data_quality,
-                db_task.dimension)
+                self._object.dimension)
 
-            return data_getter(request, db_task.data.start_frame,
-                db_task.data.stop_frame, db_task.data)
+            return data_getter(request, self._object.data.start_frame,
+                self._object.data.stop_frame, self._object.data)
+
+    @action(detail=True, methods=['HEAD', 'PATCH'], url_path='data/'+UploadMixin.file_id_regex)
+    def append_data_chunk(self, request, pk, file_id):
+        self._object = self.get_object()
+        return self.append_tus_chunk(request, file_id)
 
     @extend_schema(methods=['GET'], summary='Method allows to download task annotations',
         parameters=[
@@ -788,7 +777,7 @@ class TaskViewSet(UploadMixin, viewsets.ModelViewSet):
             '201': OpenApiResponse(description='Annotations file is ready to download'),
             '202': OpenApiResponse(description='Dump of annotations has been started'),
             '405': OpenApiResponse(description='Format is not available'),
-        }, tags=['tasks'], versions=['2.0'])
+        })
     @extend_schema(methods=['PUT'], summary='Method allows to upload task annotations',
         parameters=[
             OpenApiParameter('format', location=OpenApiParameter.QUERY, type=OpenApiTypes.STR, required=False,
@@ -798,24 +787,24 @@ class TaskViewSet(UploadMixin, viewsets.ModelViewSet):
             '201': OpenApiResponse(description='Uploading has finished'),
             '202': OpenApiResponse(description='Uploading has been started'),
             '405': OpenApiResponse(description='Format is not available'),
-        }, tags=['tasks'], versions=['2.0'])
+        })
     @extend_schema(methods=['PATCH'], summary='Method performs a partial update of annotations in a specific task',
         parameters=[
             OpenApiParameter('action', location=OpenApiParameter.QUERY, required=True,
                 type=OpenApiTypes.STR, enum=['create', 'update', 'delete']),
-        ], tags=['tasks'], versions=['2.0'])
+        ])
     @extend_schema(methods=['DELETE'], summary='Method deletes all annotations for a specific task',
         responses={
             '204': OpenApiResponse(description='The annotation has been deleted'),
-        }, tags=['tasks'], versions=['2.0'])
-    @action(detail=True, methods=['GET', 'DELETE', 'PUT', 'PATCH'],
+        })
+    @action(detail=True, methods=['GET', 'DELETE', 'PUT', 'PATCH', 'POST', 'OPTIONS'], url_path=r'annotations/?$',
         serializer_class=LabeledDataSerializer)
     def annotations(self, request, pk):
-        db_task = self.get_object() # force to call check_object_permissions
+        self._object = self.get_object() # force to call check_object_permissions
         if request.method == 'GET':
             format_name = request.query_params.get('format')
             if format_name:
-                return _export_annotations(db_instance=db_task,
+                return _export_annotations(db_instance=self._object,
                     rq_id="/api/tasks/{}/annotations/{}".format(pk, format_name),
                     request=request,
                     action=request.query_params.get("action", "").lower(),
@@ -828,6 +817,8 @@ class TaskViewSet(UploadMixin, viewsets.ModelViewSet):
                 serializer = LabeledDataSerializer(data=data)
                 if serializer.is_valid(raise_exception=True):
                     return Response(serializer.data)
+        elif request.method == 'POST' or request.method == 'OPTIONS':
+            return self.upload_data(request)
         elif request.method == 'PUT':
             format_name = request.query_params.get('format')
             if format_name:
@@ -859,11 +850,16 @@ class TaskViewSet(UploadMixin, viewsets.ModelViewSet):
                     return Response(data=str(e), status=status.HTTP_400_BAD_REQUEST)
                 return Response(data)
 
+    @action(detail=True, methods=['HEAD', 'PATCH'], url_path='annotations/'+UploadMixin.file_id_regex)
+    def append_annotations_chunk(self, request, pk, file_id):
+        self._object = self.get_object()
+        return self.append_tus_chunk(request, file_id)
+
     @extend_schema(
         summary='When task is being created the method returns information about a status of the creation process',
         responses={
             '200': RqStatusSerializer,
-        }, tags=['tasks'], versions=['2.0'])
+        })
     @action(detail=True, methods=['GET'], serializer_class=RqStatusSerializer)
     def status(self, request, pk):
         self.get_object() # force to call check_object_permissions
@@ -896,7 +892,7 @@ class TaskViewSet(UploadMixin, viewsets.ModelViewSet):
     @extend_schema(summary='Method provides a meta information about media files which are related with the task',
         responses={
             '200': DataMetaSerializer,
-        }, tags=['tasks'], versions=['2.0'])
+        })
     @action(detail=True, methods=['GET'], serializer_class=DataMetaSerializer,
         url_path='data/meta')
     def data_info(request, pk):
@@ -940,7 +936,7 @@ class TaskViewSet(UploadMixin, viewsets.ModelViewSet):
             '201': OpenApiResponse(description='Output file is ready for downloading'),
             '202': OpenApiResponse(description='Exporting has been started'),
             '405': OpenApiResponse(description='Format is not available'),
-        }, tags=['tasks'], versions=['2.0'])
+        })
     @action(detail=True, methods=['GET'], serializer_class=None,
         url_path='dataset')
     def dataset_export(self, request, pk):
@@ -956,48 +952,52 @@ class TaskViewSet(UploadMixin, viewsets.ModelViewSet):
             filename=request.query_params.get("filename", "").lower(),
         )
 
-class CharInFilter(filters.BaseInFilter, filters.CharFilter):
-    pass
-
-class JobFilter(filters.FilterSet):
-    assignee = filters.CharFilter(field_name="assignee__username", lookup_expr="icontains")
-    stage = CharInFilter(field_name="stage", lookup_expr="in")
-    state = CharInFilter(field_name="state", lookup_expr="in")
-
-    class Meta:
-        model = Job
-        fields = ("assignee", )
-
-@extend_schema_view(retrieve=extend_schema(
-    summary='Method returns details of a job',
-    responses={
-        '200': JobReadSerializer,
-    }, tags=['jobs'], versions=['2.0']))
-@extend_schema_view(list=extend_schema(
-    summary='Method returns a paginated list of jobs according to query parameters',
-    responses={
-        '200': JobReadSerializer(many=True),
-    }, tags=['jobs'], versions=['2.0']))
-@extend_schema_view(update=extend_schema(
-    summary='Method updates a job by id',
-    responses={
-        '200': JobWriteSerializer,
-    }, tags=['jobs'], versions=['2.0']))
-@extend_schema_view(partial_update=extend_schema(
-   summary='Methods does a partial update of chosen fields in a job',
-   responses={
-       '200': JobWriteSerializer,
-   }, tags=['jobs'], versions=['2.0']))
+@extend_schema(tags=['jobs'])
+@extend_schema_view(
+    retrieve=extend_schema(
+        summary='Method returns details of a job',
+        responses={
+            '200': JobReadSerializer,
+        }),
+    list=extend_schema(
+        summary='Method returns a paginated list of jobs according to query parameters',
+        responses={
+            '200': JobReadSerializer(many=True),
+        }),
+    update=extend_schema(
+        summary='Method updates a job by id',
+        responses={
+            '200': JobWriteSerializer,
+        }),
+    partial_update=extend_schema(
+        summary='Methods does a partial update of chosen fields in a job',
+        responses={
+            '200': JobWriteSerializer,
+        })
+)
 class JobViewSet(viewsets.GenericViewSet, mixins.ListModelMixin,
-    mixins.RetrieveModelMixin, mixins.UpdateModelMixin):
-    queryset = Job.objects.all().order_by('id')
-    filterset_class = JobFilter
+    mixins.RetrieveModelMixin, mixins.UpdateModelMixin, UploadMixin):
+    queryset = Job.objects.all()
     iam_organization_field = 'segment__task__organization'
+    search_fields = ('task_name', 'project_name', 'assignee', 'state', 'stage')
+    filter_fields = list(search_fields) + ['id', 'task_id', 'project_id', 'updated_date']
+    ordering_fields = filter_fields
+    ordering = "-id"
+    lookup_fields = {
+        'dimension': 'segment__task__dimension',
+        'task_id': 'segment__task_id',
+        'project_id': 'segment__task__project_id',
+        'task_name': 'segment__task__name',
+        'project_name': 'segment__task__project__name',
+        'updated_date': 'segment__task__updated_date',
+        'assignee': 'assignee__username'
+    }
 
     def get_queryset(self):
         queryset = super().get_queryset()
+
         if self.action == 'list':
-            perm = JobPermission.create_list(self.request)
+            perm = JobPermission.create_scope_list(self.request)
             queryset = perm.filter(queryset)
 
         return queryset
@@ -1008,16 +1008,44 @@ class JobViewSet(viewsets.GenericViewSet, mixins.ListModelMixin,
         else:
             return JobWriteSerializer
 
+    # UploadMixin method
+    def get_upload_dir(self):
+        task = self._object.segment.task
+        return task.get_tmp_dirname()
+
+    # UploadMixin method
+    def upload_finished(self, request):
+        task = self._object.segment.task
+        if self.action == 'annotations':
+            format_name = request.query_params.get("format", "")
+            filename = request.query_params.get("filename", "")
+            tmp_dir = task.get_tmp_dirname()
+            if os.path.isfile(os.path.join(tmp_dir, filename)):
+                annotation_file = os.path.join(tmp_dir, filename)
+                return _import_annotations(
+                        request=request,
+                        filename=annotation_file,
+                        rq_id="{}@/api/jobs/{}/annotations/upload".format(request.user, self._object.pk),
+                        rq_func=dm.task.import_job_annotations,
+                        pk=self._object.pk,
+                        format_name=format_name,
+                    )
+            else:
+                return Response(data='No such file were uploaded',
+                        status=status.HTTP_400_BAD_REQUEST)
+        return Response(data='Unknown upload was finished',
+                        status=status.HTTP_400_BAD_REQUEST)
+
     @extend_schema(methods=['GET'], summary='Method returns annotations for a specific job',
         responses={
             '200': LabeledDataSerializer(many=True),
-        }, tags=['jobs'], versions=['2.0'])
+        })
     @extend_schema(methods=['PUT'], summary='Method performs an update of all annotations in a specific job',
         request=AnnotationFileSerializer, responses={
             '201': OpenApiResponse(description='Uploading has finished'),
             '202': OpenApiResponse(description='Uploading has been started'),
             '405': OpenApiResponse(description='Format is not available'),
-        }, tags=['jobs'], versions=['2.0'])
+        })
     @extend_schema(methods=['PATCH'], summary='Method performs a partial update of annotations in a specific job',
         parameters=[
             OpenApiParameter('action', location=OpenApiParameter.QUERY, type=OpenApiTypes.STR,
@@ -1026,20 +1054,22 @@ class JobViewSet(viewsets.GenericViewSet, mixins.ListModelMixin,
         responses={
             #TODO
             '200': OpenApiResponse(description=''),
-        }, tags=['jobs'], versions=['2.0'])
+        })
     @extend_schema(methods=['DELETE'], summary='Method deletes all annotations for a specific job',
         responses={
             '204': OpenApiResponse(description='The annotation has been deleted'),
-        }, tags=['jobs'], versions=['2.0'])
-    @action(detail=True, methods=['GET', 'DELETE', 'PUT', 'PATCH'],
+        })
+    @action(detail=True, methods=['GET', 'DELETE', 'PUT', 'PATCH', 'POST', 'OPTIONS'], url_path=r'annotations/?$',
         serializer_class=LabeledDataSerializer)
     def annotations(self, request, pk):
-        self.get_object() # force to call check_object_permissions
+        self._object = self.get_object() # force to call check_object_permissions
         if request.method == 'GET':
             data = dm.task.get_job_data(pk)
             return Response(data)
+        elif request.method == 'POST' or request.method == 'OPTIONS':
+            return self.upload_data(request)
         elif request.method == 'PUT':
-            format_name = request.query_params.get("format", "")
+            format_name = request.query_params.get('format', '')
             if format_name:
                 return _import_annotations(
                     request=request,
@@ -1072,11 +1102,16 @@ class JobViewSet(viewsets.GenericViewSet, mixins.ListModelMixin,
                     return Response(data=str(e), status=status.HTTP_400_BAD_REQUEST)
                 return Response(data)
 
+    @action(detail=True, methods=['HEAD', 'PATCH'], url_path='annotations/'+UploadMixin.file_id_regex)
+    def append_annotations_chunk(self, request, pk, file_id):
+        self._object = self.get_object()
+        return self.append_tus_chunk(request, file_id)
+
     @extend_schema(
         summary='Method returns list of issues for the job',
         responses={
             '200': IssueReadSerializer(many=True)
-        }, tags=['jobs'], versions=['2.0'])
+        })
     @action(detail=True, methods=['GET'], serializer_class=IssueReadSerializer)
     def issues(self, request, pk):
         db_job = self.get_object()
@@ -1099,7 +1134,7 @@ class JobViewSet(viewsets.GenericViewSet, mixins.ListModelMixin,
             ],
         responses={
             '200': OpenApiResponse(description='Data of a specific type'),
-        }, tags=['jobs'], versions=['2.0'])
+        })
     @action(detail=True, methods=['GET'])
     def data(self, request, pk):
         db_job = self.get_object() # call check_object_permissions as well
@@ -1113,45 +1148,71 @@ class JobViewSet(viewsets.GenericViewSet, mixins.ListModelMixin,
         return data_getter(request, db_job.segment.start_frame,
             db_job.segment.stop_frame, db_job.segment.task.data)
 
-@extend_schema_view(retrieve=extend_schema(
-    summary='Method returns details of an issue',
-    responses={
-        '200': IssueReadSerializer,
-    }, tags=['issues'], versions=['2.0']))
-@extend_schema_view(list=extend_schema(
-    summary='Method returns a paginated list of issues according to query parameters',
-    responses={
-        '200': IssueReadSerializer(many=True),
-    }, tags=['issues'], versions=['2.0']))
-@extend_schema_view(update=extend_schema(
-    summary='Method updates an issue by id',
-    responses={
-        '200': IssueWriteSerializer,
-    }, tags=['issues'], versions=['2.0']))
-@extend_schema_view(partial_update=extend_schema(
-   summary='Methods does a partial update of chosen fields in an issue',
-   responses={
-       '200': IssueWriteSerializer,
-    }, tags=['issues'], versions=['2.0']))
-@extend_schema_view(create=extend_schema(
-    summary='Method creates an issue',
-    responses={
-        '201': IssueWriteSerializer,
-    }, tags=['issues'], versions=['2.0']))
-@extend_schema_view(destroy=extend_schema(
-    summary='Method deletes an issue',
-    responses={
-        '204': OpenApiResponse(description='The issue has been deleted'),
-    }, tags=['issues'], versions=['2.0']))
+    @extend_schema(summary='The action returns the list of tracked '
+        'changes for the job', responses={
+            '200': JobCommitSerializer(many=True),
+        })
+    @action(detail=True, methods=['GET'], serializer_class=JobCommitSerializer)
+    def commits(self, request, pk):
+        db_job = self.get_object()
+        queryset = db_job.commits
+        serializer = JobCommitSerializer(queryset,
+            context={'request': request}, many=True)
+
+        return Response(serializer.data)
+
+@extend_schema(tags=['issues'])
+@extend_schema_view(
+    retrieve=extend_schema(
+        summary='Method returns details of an issue',
+        responses={
+            '200': IssueReadSerializer,
+        }),
+    list=extend_schema(
+        summary='Method returns a paginated list of issues according to query parameters',
+        responses={
+            '200': IssueReadSerializer(many=True),
+        }),
+    update=extend_schema(
+        summary='Method updates an issue by id',
+        responses={
+            '200': IssueWriteSerializer,
+        }),
+    partial_update=extend_schema(
+        summary='Methods does a partial update of chosen fields in an issue',
+        responses={
+            '200': IssueWriteSerializer,
+        }),
+    create=extend_schema(
+        summary='Method creates an issue',
+        responses={
+            '201': IssueWriteSerializer,
+        }),
+    destroy=extend_schema(
+        summary='Method deletes an issue',
+        responses={
+            '204': OpenApiResponse(description='The issue has been deleted'),
+        })
+)
 class IssueViewSet(viewsets.ModelViewSet):
     queryset = Issue.objects.all().order_by('-id')
     http_method_names = ['get', 'post', 'patch', 'delete', 'options']
     iam_organization_field = 'job__segment__task__organization'
+    search_fields = ('owner', 'assignee')
+    filter_fields = list(search_fields) + ['id', 'job_id', 'task_id', 'resolved']
+    lookup_fields = {
+        'owner': 'owner__username',
+        'assignee': 'assignee__username',
+        'job_id': 'job__id',
+        'task_id': 'job__segment__task__id',
+    }
+    ordering_fields = filter_fields
+    ordering = '-id'
 
     def get_queryset(self):
         queryset = super().get_queryset()
         if self.action == 'list':
-            perm = IssuePermission.create_list(self.request)
+            perm = IssuePermission.create_scope_list(self.request)
             queryset = perm.filter(queryset)
 
         return queryset
@@ -1168,7 +1229,7 @@ class IssueViewSet(viewsets.ModelViewSet):
     @extend_schema(summary='The action returns all comments of a specific issue',
         responses={
             '200': CommentReadSerializer(many=True),
-        }, tags=['issues'], versions=['2.0'])
+        })
     @action(detail=True, methods=['GET'], serializer_class=CommentReadSerializer)
     def comments(self, request, pk):
         db_issue = self.get_object()
@@ -1178,45 +1239,53 @@ class IssueViewSet(viewsets.ModelViewSet):
 
         return Response(serializer.data)
 
-@extend_schema_view(retrieve=extend_schema(
-    summary='Method returns details of a comment',
-    responses={
-        '200': CommentReadSerializer,
-    }, tags=['comments'], versions=['2.0']))
-@extend_schema_view(list=extend_schema(
-    summary='Method returns a paginated list of comments according to query parameters',
-    responses={
-        '200':CommentReadSerializer(many=True),
-    }, tags=['comments'], versions=['2.0']))
-@extend_schema_view(update=extend_schema(
-    summary='Method updates a comment by id',
-    responses={
-        '200': CommentWriteSerializer,
-    }, tags=['comments'], versions=['2.0']))
-@extend_schema_view(partial_update=extend_schema(
-   summary='Methods does a partial update of chosen fields in a comment',
-   responses={
-       '200': CommentWriteSerializer,
-   }, tags=['comments'], versions=['2.0']))
-@extend_schema_view(create=extend_schema(
-    summary='Method creates a comment',
-    responses={
-        '201': CommentWriteSerializer,
-    }, tags=['comments'], versions=['2.0']))
-@extend_schema_view(destroy=extend_schema(
-    summary='Method deletes a comment',
-    responses={
-        '204': OpenApiResponse(description='The comment has been deleted'),
-    }, tags=['comments'], versions=['2.0']))
+@extend_schema(tags=['comments'])
+@extend_schema_view(
+    retrieve=extend_schema(
+        summary='Method returns details of a comment',
+        responses={
+            '200': CommentReadSerializer,
+        }),
+    list=extend_schema(
+        summary='Method returns a paginated list of comments according to query parameters',
+        responses={
+            '200':CommentReadSerializer(many=True),
+        }),
+    update=extend_schema(
+        summary='Method updates a comment by id',
+        responses={
+            '200': CommentWriteSerializer,
+        }),
+    partial_update=extend_schema(
+        summary='Methods does a partial update of chosen fields in a comment',
+        responses={
+            '200': CommentWriteSerializer,
+        }),
+    create=extend_schema(
+        summary='Method creates a comment',
+        responses={
+            '201': CommentWriteSerializer,
+        }),
+    destroy=extend_schema(
+        summary='Method deletes a comment',
+        responses={
+            '204': OpenApiResponse(description='The comment has been deleted'),
+        })
+)
 class CommentViewSet(viewsets.ModelViewSet):
     queryset = Comment.objects.all().order_by('-id')
     http_method_names = ['get', 'post', 'patch', 'delete', 'options']
     iam_organization_field = 'issue__job__segment__task__organization'
+    search_fields = ('owner',)
+    filter_fields = list(search_fields) + ['id', 'issue_id']
+    ordering_fields = filter_fields
+    ordering = '-id'
+    lookup_fields = {'owner': 'owner__username', 'issue_id': 'issue__id'}
 
     def get_queryset(self):
         queryset = super().get_queryset()
         if self.action == 'list':
-            perm = CommentPermission.create_list(self.request)
+            perm = CommentPermission.create_scope_list(self.request)
             queryset = perm.filter(queryset)
 
         return queryset
@@ -1230,58 +1299,53 @@ class CommentViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         serializer.save(owner=self.request.user)
 
-class UserFilter(filters.FilterSet):
-    class Meta:
-        model = User
-        fields = ("id", "is_active")
-
-@extend_schema_view(list=extend_schema(
-    summary='Method provides a paginated list of users registered on the server',
-    parameters=[
-        OpenApiParameter('id', description='A unique number value identifying this user',
-            location=OpenApiParameter.QUERY, type=OpenApiTypes.NUMBER),
-        OpenApiParameter('is_active', description='Returns only active users',
-            location=OpenApiParameter.QUERY, type=OpenApiTypes.BOOL),
-    ],
-    responses={
-        '200': PolymorphicProxySerializer(component_name='MetaUser',
-            serializers=[
-                UserSerializer, BasicUserSerializer,
-            ], resource_type_field_name='username'),
-    }, tags=['users'], versions=['2.0']))
-@extend_schema_view(retrieve=extend_schema(
-    summary='Method provides information of a specific user',
-    responses={
-        '200': PolymorphicProxySerializer(component_name='MetaUser',
-            serializers=[
-                UserSerializer, BasicUserSerializer,
-            ], resource_type_field_name='username'),
-    }, tags=['users'], versions=['2.0']))
-@extend_schema_view(partial_update=extend_schema(
-    summary='Method updates chosen fields of a user',
-    responses={
-        '200': PolymorphicProxySerializer(component_name='MetaUser',
-            serializers=[
-                UserSerializer, BasicUserSerializer,
-            ], resource_type_field_name='username'),
-    }, tags=['users'], versions=['2.0']))
-@extend_schema_view(destroy=extend_schema(
-    summary='Method deletes a specific user from the server',
-    responses={
-        '204': OpenApiResponse(description='The user has been deleted'),
-    }, tags=['users'], versions=['2.0']))
+@extend_schema(tags=['users'])
+@extend_schema_view(
+    list=extend_schema(
+        summary='Method provides a paginated list of users registered on the server',
+        responses={
+            '200': PolymorphicProxySerializer(component_name='MetaUser',
+                serializers=[
+                    UserSerializer, BasicUserSerializer,
+                ], resource_type_field_name='username'),
+        }),
+    retrieve=extend_schema(
+        summary='Method provides information of a specific user',
+        responses={
+            '200': PolymorphicProxySerializer(component_name='MetaUser',
+                serializers=[
+                    UserSerializer, BasicUserSerializer,
+                ], resource_type_field_name='username'),
+        }),
+    partial_update=extend_schema(
+        summary='Method updates chosen fields of a user',
+        responses={
+            '200': PolymorphicProxySerializer(component_name='MetaUser',
+                serializers=[
+                    UserSerializer, BasicUserSerializer,
+                ], resource_type_field_name='username'),
+        }),
+    destroy=extend_schema(
+        summary='Method deletes a specific user from the server',
+        responses={
+            '204': OpenApiResponse(description='The user has been deleted'),
+        })
+)
 class UserViewSet(viewsets.GenericViewSet, mixins.ListModelMixin,
     mixins.RetrieveModelMixin, mixins.UpdateModelMixin, mixins.DestroyModelMixin):
-    queryset = User.objects.prefetch_related('groups').all().order_by('id')
-    http_method_names = ['get', 'post', 'head', 'patch', 'delete']
+    queryset = User.objects.prefetch_related('groups').all()
+    http_method_names = ['get', 'post', 'head', 'patch', 'delete', 'options']
     search_fields = ('username', 'first_name', 'last_name')
-    filterset_class = UserFilter
     iam_organization_field = 'memberships__organization'
+
+    filter_fields = ('id', 'is_active', 'username')
+    ordering_fields = filter_fields
+    ordering = "-id"
 
     def get_queryset(self):
         queryset = super().get_queryset()
         if self.action == 'list':
-            perm = UserPermission(self.request, self)
+            perm = UserPermission.create_scope_list(self.request)
             queryset = perm.filter(queryset)
 
         return queryset
@@ -1304,7 +1368,7 @@ class UserViewSet(viewsets.GenericViewSet, mixins.ListModelMixin,
                 serializers=[
                     UserSerializer, BasicUserSerializer,
                 ], resource_type_field_name='username'),
-        }, tags=['users'], versions=['2.0'])
+        })
     @action(detail=False, methods=['GET'])
     def self(self, request):
         """
@@ -1314,77 +1378,44 @@ class UserViewSet(viewsets.GenericViewSet, mixins.ListModelMixin,
         serializer = serializer_class(request.user, context={ "request": request })
         return Response(serializer.data)
 
-# TODO: it will be good to find a way to define description using drf_spectacular.
-# But now it will be enough to use an example
-# class RedefineDescriptionField(FieldInspector):
-#     # pylint: disable=no-self-use
-#     def process_result(self, result, method_name, obj, **kwargs):
-#         if isinstance(result, openapi.Schema):
-#             if hasattr(result, 'title') and result.title == 'Specific attributes':
-#                 result.description = 'structure like key1=value1&key2=value2\n' \
-#                     'supported: range=aws_range'
-#         return result
-
-class CloudStorageFilter(filters.FilterSet):
-    display_name = filters.CharFilter(field_name='display_name', lookup_expr='icontains')
-    provider_type = filters.CharFilter(field_name='provider_type', lookup_expr='icontains')
-    resource = filters.CharFilter(field_name='resource', lookup_expr='icontains')
-    credentials_type = filters.CharFilter(field_name='credentials_type', lookup_expr='icontains')
-    description = filters.CharFilter(field_name='description', lookup_expr='icontains')
-    owner = filters.CharFilter(field_name='owner__username', lookup_expr='icontains')
-
-    class Meta:
-        model = models.CloudStorage
-        fields = ('id', 'display_name', 'provider_type', 'resource', 'credentials_type', 'description', 'owner')
-
-@extend_schema_view(retrieve=extend_schema(
-    summary='Method returns details of a specific cloud storage',
-    responses={
-        '200': CloudStorageReadSerializer,
-    }, tags=['cloud storages'], versions=['2.0']))
-@extend_schema_view(list=extend_schema(
-    summary='Returns a paginated list of storages according to query parameters',
-    parameters=[
-        OpenApiParameter('provider_type', description='A supported provider of cloud storages',
-            location=OpenApiParameter.QUERY, type=OpenApiTypes.STR, enum=CloudProviderChoice.list()),
-        OpenApiParameter('display_name', description='A display name of storage',
-            location=OpenApiParameter.QUERY, type=OpenApiTypes.STR),
-        OpenApiParameter('resource', description='A name of bucket or container',
-            location=OpenApiParameter.QUERY, type=OpenApiTypes.STR),
-        OpenApiParameter('owner', description='A resource owner',
-            location=OpenApiParameter.QUERY, type=OpenApiTypes.STR),
-        OpenApiParameter('credentials_type', description='A type of a granting access',
-            location=OpenApiParameter.QUERY, type=OpenApiTypes.STR, enum=CredentialsTypeChoice.list()),
-    ],
-    #FIXME
-    #field_inspectors=[RedefineDescriptionField]
-    responses={
-        '200': CloudStorageReadSerializer(many=True),
-    }, tags=['cloud storages'], versions=['2.0']))
-@extend_schema_view(destroy=extend_schema(
-    summary='Method deletes a specific cloud storage',
-    responses={
-        '204': OpenApiResponse(description='The cloud storage has been removed'),
-    }, tags=['cloud storages'], versions=['2.0']))
-@extend_schema_view(partial_update=extend_schema(
-    summary='Methods does a partial update of chosen fields in a cloud storage instance',
-    # FIXME
-    #field_inspectors=[RedefineDescriptionField]
-    responses={
-        '200': CloudStorageWriteSerializer,
-    }, tags=['cloud storages'], versions=['2.0']))
-@extend_schema_view(create=extend_schema(
-    summary='Method creates a cloud storage with a specified characteristics',
-    # FIXME
-    #field_inspectors=[RedefineDescriptionField],
-    responses={
-        '201': CloudStorageWriteSerializer,
-    }, tags=['cloud storages'], versions=['2.0']))
+@extend_schema(tags=['cloud storages'])
+@extend_schema_view(
+    retrieve=extend_schema(
+        summary='Method returns details of a specific cloud storage',
+        responses={
+            '200': CloudStorageReadSerializer,
+        }),
+    list=extend_schema(
+        summary='Returns a paginated list of storages according to query parameters',
+        responses={
+            '200': CloudStorageReadSerializer(many=True),
+        }),
+    destroy=extend_schema(
+        summary='Method deletes a specific cloud storage',
+        responses={
+            '204': OpenApiResponse(description='The cloud storage has been removed'),
+        }),
+    partial_update=extend_schema(
+        summary='Methods does a partial update of chosen fields in a cloud storage instance',
+        responses={
+            '200': CloudStorageWriteSerializer,
+        }),
+    create=extend_schema(
+        summary='Method creates a cloud storage with a specified characteristics',
+        responses={
+            '201': CloudStorageWriteSerializer,
+        })
+)
 class CloudStorageViewSet(viewsets.ModelViewSet):
-    http_method_names = ['get', 'post', 'patch', 'delete']
-    queryset = CloudStorageModel.objects.all().prefetch_related('data').order_by('-id')
-    search_fields = ('provider_type', 'display_name', 'resource', 'credentials_type', 'owner__username', 'description')
-    filterset_class = CloudStorageFilter
+    http_method_names = ['get', 'post', 'patch', 'delete', 'options']
+    queryset = CloudStorageModel.objects.all().prefetch_related('data')
+
+    search_fields = ('provider_type', 'display_name', 'resource',
+                    'credentials_type', 'owner', 'description')
+    filter_fields = list(search_fields) + ['id']
+    ordering_fields = filter_fields
+    ordering = "-id"
+    lookup_fields = {'owner': 'owner__username'}
     iam_organization_field = 'organization'
 
     def get_serializer_class(self):
@@ -1396,7 +1427,7 @@ class CloudStorageViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         queryset = super().get_queryset()
         if self.action == 'list':
-            perm = CloudStoragePermission(self.request, self)
+            perm = CloudStoragePermission.create_scope_list(self.request)
             queryset = perm.filter(queryset)
 
         provider_type = self.request.query_params.get('provider_type', None)
@@ -1441,7 +1472,7 @@ class CloudStorageViewSet(viewsets.ModelViewSet):
         ],
         responses={
             '200': OpenApiResponse(response=OpenApiTypes.OBJECT, description='A manifest content'),
-        }, tags=['cloud storages'], versions=['2.0'])
+        })
     @action(detail=True, methods=['GET'], url_path='content')
     def content(self, request, pk):
         storage = None
@@ -1501,7 +1532,7 @@ class CloudStorageViewSet(viewsets.ModelViewSet):
     @extend_schema(summary='Method returns a preview image from a cloud storage',
         responses={
             '200': OpenApiResponse(description='Cloud Storage preview'),
-        }, tags=['cloud storages'], versions=['2.0'])
+        })
     @action(detail=True, methods=['GET'], url_path='preview')
     def preview(self, request, pk):
         storage = None
@@ -1577,7 +1608,7 @@ class CloudStorageViewSet(viewsets.ModelViewSet):
     @extend_schema(summary='Method returns a cloud storage status',
         responses={
             '200': OpenApiResponse(response=OpenApiTypes.STR, description='Cloud Storage status (AVAILABLE | NOT_FOUND | FORBIDDEN)'),
-        }, tags=['cloud storages'], versions=['2.0'])
+        })
     @action(detail=True, methods=['GET'], url_path='status')
     def status(self, request, pk):
         try:
@@ -1612,7 +1643,7 @@ def rq_handler(job, exc_type, exc_value, tb):
 
     return True
 
-def _import_annotations(request, rq_id, rq_func, pk, format_name):
+def _import_annotations(request, rq_id, rq_func, pk, format_name, filename=None):
     format_desc = {f.DISPLAY_NAME: f
         for f in dm.views.get_import_formats()}.get(format_name)
     if format_desc is None:
@@ -1625,31 +1656,35 @@ def _import_annotations(request, rq_id, rq_func, pk, format_name):
     rq_job = queue.fetch_job(rq_id)
 
     if not rq_job:
-        serializer = AnnotationFileSerializer(data=request.data)
-        if serializer.is_valid(raise_exception=True):
-            anno_file = serializer.validated_data['annotation_file']
-            fd, filename = mkstemp(prefix='cvat_{}'.format(pk))
-            with open(filename, 'wb+') as f:
-                for chunk in anno_file.chunks():
-                    f.write(chunk)
+        # If filename is specified we consider that file was uploaded via TUS, so it exists in filesystem
+        # Then we dont need to create temporary file
+        fd = None
+        if not filename:
+            serializer = AnnotationFileSerializer(data=request.data)
+            if serializer.is_valid(raise_exception=True):
+                anno_file = serializer.validated_data['annotation_file']
+                fd, filename = mkstemp(prefix='cvat_{}'.format(pk))
+                with open(filename, 'wb+') as f:
+                    for chunk in anno_file.chunks():
+                        f.write(chunk)
 
-            av_scan_paths(filename)
-            rq_job = queue.enqueue_call(
-                func=rq_func,
-                args=(pk, filename, format_name),
-                job_id=rq_id
-            )
-            rq_job.meta['tmp_file'] = filename
-            rq_job.meta['tmp_file_descriptor'] = fd
-            rq_job.save_meta()
+        av_scan_paths(filename)
+        rq_job = queue.enqueue_call(
+            func=rq_func,
+            args=(pk, filename, format_name),
+            job_id=rq_id
+        )
+        rq_job.meta['tmp_file'] = filename
+        rq_job.meta['tmp_file_descriptor'] = fd
+        rq_job.save_meta()
     else:
         if rq_job.is_finished:
-            os.close(rq_job.meta['tmp_file_descriptor'])
+            if rq_job.meta['tmp_file_descriptor']: os.close(rq_job.meta['tmp_file_descriptor'])
             os.remove(rq_job.meta['tmp_file'])
             rq_job.delete()
             return Response(status=status.HTTP_201_CREATED)
         elif rq_job.is_failed:
-            os.close(rq_job.meta['tmp_file_descriptor'])
+            if rq_job.meta['tmp_file_descriptor']: os.close(rq_job.meta['tmp_file_descriptor'])
             os.remove(rq_job.meta['tmp_file'])
             exc_info = str(rq_job.exc_info)
             rq_job.delete()
